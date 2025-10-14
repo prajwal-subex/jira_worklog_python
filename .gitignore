@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+env/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# PyInstaller
+# (ignore generated bundles and build)
+dist/
+build/
+*.spec   # include only if you want to ignore; otherwise commit the specific .spec
+
+# Editor / OS
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# Tests / coverage
+.pytest_cache/
+coverage/
+htmlcov/
+
+# dotenv / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# binaries (if any)
+*.exe
+*.dll
+*.so
