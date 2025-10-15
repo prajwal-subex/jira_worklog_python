@@ -39,6 +39,45 @@ class IssueTotal:
         return self.hours() / 8.0
 
 
+def _flatten_text(node) -> str:
+    """Recursively extract text from nested Jira/ADF comment structures.
+
+    Handles strings, dicts with 'text' fields, lists of such nodes, and nested 'content' lists.
+    Returns a plain string.
+    """
+    if node is None:
+        return ''
+    if isinstance(node, str):
+        return node
+    texts: List[str] = []
+    if isinstance(node, dict):
+        # direct text field
+        if 'text' in node and isinstance(node['text'], str):
+            texts.append(node['text'])
+        # common ADF shape: { 'type': 'paragraph', 'content': [ ... ] }
+        for key in ('content', 'children', 'body'):
+            if key in node and isinstance(node[key], (list, dict)):
+                texts.append(_flatten_text(node[key]))
+        # legacy shapes
+        for v in node.values():
+            if isinstance(v, (list, dict, str)):
+                # avoid duplicating text fields
+                if v is node.get('text'):
+                    continue
+                texts.append(_flatten_text(v))
+    elif isinstance(node, list):
+        for item in node:
+            texts.append(_flatten_text(item))
+    else:
+        # fallback to string conversion
+        try:
+            return str(node)
+        except Exception:
+            return ''
+    # join and normalize whitespace
+    return ' '.join(t.strip() for t in texts if t and isinstance(t, str)).strip()
+
+
 def compute_range(period: str, tz: Optional[pytz.timezone] = None) -> Optional[Tuple[datetime, datetime]]:
     if tz is None:
         tz = pytz.timezone(os.environ.get('TZ', 'UTC'))
@@ -184,6 +223,8 @@ def main():
     totals: Dict[str, int] = {}
     summaries: Dict[str, str] = {}
     projects: Dict[str, str] = {}
+    # collect per-worklog detail rows: tuple(issue_key, summary, project, started_iso, seconds, comment)
+    details: List[Tuple[str, str, str, str, int, str]] = []
 
     for issue in issues:
         key = issue.get('key', 'UNKNOWN')
@@ -213,6 +254,15 @@ def main():
                     if odt < start or odt > end:
                         continue
                 issue_seconds += seconds
+                # capture a detail row; prefer 'comment' or 'comment' field if present
+                comment = ''
+                # JIRA worklog comment may be in 'comment' or nested ADF-like structures.
+                if 'comment' in wl and wl.get('comment'):
+                    c = wl.get('comment')
+                    # flatten any nested structure to plain text
+                    comment = _flatten_text(c)
+                # store started in ISO form
+                details.append((key, summary, project, odt.isoformat(), seconds, comment))
             except Exception:
                 continue
         totals[key] = issue_seconds
@@ -258,7 +308,7 @@ def main():
         # Grand total row
         ws.append(['GRAND TOTAL', '', '', float(f"{grand/3600.0:.2f}"), float(f"{(grand/3600.0)/8.0:.2f}")])
 
-        # simple column width adjustments
+        # simple column width adjustments for summary sheet
         col_widths = {}
         for row in ws.iter_rows(min_row=4, max_row=ws.max_row):
             for i, cell in enumerate(row, start=1):
@@ -272,13 +322,41 @@ def main():
         for i, width in col_widths.items():
             ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 60)
 
-        # number formatting for hours/days columns
+        # number formatting for hours/days columns (summary)
         for row in ws.iter_rows(min_row=5, min_col=4, max_col=5, max_row=ws.max_row):
             for cell in row:
                 cell.number_format = '0.00'
 
+        # add a Details sheet with per-worklog rows
+        details_ws = wb.create_sheet('Details')
+        details_headers = ['Issue Key', 'Summary', 'Project', 'Started', 'Hours', 'Comment']
+        details_ws.append(details_headers)
+        for d in details:
+            ikey, summ, proj, started_iso, seconds, comment = d
+            hours = round(seconds / 3600.0, 2)
+            details_ws.append([ikey, summ, proj, started_iso, hours, comment])
+
+        # simple column width adjustments for details sheet
+        dcol_widths = {}
+        for row in details_ws.iter_rows(min_row=1, max_row=details_ws.max_row):
+            for i, cell in enumerate(row, start=1):
+                val = cell.value
+                if val is None:
+                    length = 0
+                else:
+                    length = len(str(val))
+                dcol_widths[i] = max(dcol_widths.get(i, 0), length)
+
+        for i, width in dcol_widths.items():
+            details_ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 80)
+
+        # number formatting for hours column in details
+        for row in details_ws.iter_rows(min_row=2, min_col=5, max_col=5, max_row=details_ws.max_row):
+            for cell in row:
+                cell.number_format = '0.00'
+
         wb.save(out)
-        print(f"Wrote Excel report to {out}")
+        print(f"Wrote Excel report to {out} (sheets: {', '.join(wb.sheetnames)})")
 
 
 if __name__ == '__main__':
