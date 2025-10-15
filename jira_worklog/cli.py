@@ -223,8 +223,9 @@ def main():
     totals: Dict[str, int] = {}
     summaries: Dict[str, str] = {}
     projects: Dict[str, str] = {}
-    # collect per-worklog detail rows: tuple(issue_key, summary, project, started_iso, seconds, comment)
-    details: List[Tuple[str, str, str, str, int, str]] = []
+    # collect per-worklog detail rows: tuple(issue_key, summary, project, started_iso, created_iso, seconds, comment)
+    details: List[Tuple[str, str, str, str, str, int, str]] = []
+    IST = pytz.FixedOffset(330)  # IST is UTC+5:30
 
     for issue in issues:
         key = issue.get('key', 'UNKNOWN')
@@ -256,13 +257,26 @@ def main():
                 issue_seconds += seconds
                 # capture a detail row; prefer 'comment' or 'comment' field if present
                 comment = ''
-                # JIRA worklog comment may be in 'comment' or nested ADF-like structures.
                 if 'comment' in wl and wl.get('comment'):
                     c = wl.get('comment')
-                    # flatten any nested structure to plain text
                     comment = _flatten_text(c)
-                # store started in ISO form
-                details.append((key, summary, project, odt.isoformat(), seconds, comment))
+
+                # started is odt; convert to IST and store ISO
+                started_ist = odt.astimezone(IST)
+                started_iso = started_ist.isoformat()
+
+                # try to extract a created timestamp from the worklog entry if present
+                created_iso = ''
+                if 'created' in wl and wl.get('created'):
+                    try:
+                        codt = parser.isoparse(wl.get('created'))
+                        if codt.tzinfo is None:
+                            codt = codt.replace(tzinfo=pytz.UTC)
+                        created_iso = codt.astimezone(IST).isoformat()
+                    except Exception:
+                        created_iso = str(wl.get('created'))
+
+                details.append((key, summary, project, started_iso, created_iso, seconds, comment))
             except Exception:
                 continue
         totals[key] = issue_seconds
@@ -329,12 +343,12 @@ def main():
 
         # add a Details sheet with per-worklog rows
         details_ws = wb.create_sheet('Details')
-        details_headers = ['Issue Key', 'Summary', 'Project', 'Started', 'Hours', 'Comment']
+        details_headers = ['Issue Key', 'Summary', 'Project', 'Started (IST)', 'Created (IST)', 'Hours', 'Comment']
         details_ws.append(details_headers)
         for d in details:
-            ikey, summ, proj, started_iso, seconds, comment = d
+            ikey, summ, proj, started_iso, created_iso, seconds, comment = d
             hours = round(seconds / 3600.0, 2)
-            details_ws.append([ikey, summ, proj, started_iso, hours, comment])
+            details_ws.append([ikey, summ, proj, started_iso, created_iso, hours, comment])
 
         # simple column width adjustments for details sheet
         dcol_widths = {}
