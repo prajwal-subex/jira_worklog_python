@@ -123,7 +123,7 @@ def main():
     if period not in ('this', 'last', 'all'):
         print("Unknown period. Use this, last or all.")
         sys.exit(1)
-    out = input("Output file [worklog-report.html]: ").strip() or 'worklog-report.html'
+    out = input("Output file [worklog-report.xlsx]: ").strip() or 'worklog-report.xlsx'
     csv_mode = out.lower().endswith('.csv')
 
     if period == 'this':
@@ -233,130 +233,52 @@ def main():
             w.writerow(['GRAND TOTAL', '', '', f"{grand/3600.0:.2f}", f"{(grand/3600.0)/8.0:.2f}"])
         print(f"Wrote CSV report to {out}")
     else:
-        def hescape(s: str) -> str:
-            return (s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
+        # produce an Excel .xlsx workbook using openpyxl
+        try:
+            from openpyxl import Workbook
+            from openpyxl.utils import get_column_letter
+        except Exception:
+            print("openpyxl is required to write Excel files. Install with 'pip install openpyxl'.")
+            sys.exit(3)
 
-        rows_html: List[str] = []
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Worklog'
+
+        # Header rows
+        ws.append(['Jira Worklog Report'])
+        ws.append([f'Period: {friendly_period}', f'Generated: {datetime.now().isoformat()}'])
+        ws.append([])
+        headers = ['Issue Key', 'Summary', 'Project', 'Total Hours', 'Total Days (8h)']
+        ws.append(headers)
+
         for it in list_totals:
-            rows_html.append(
-                f"<tr><td>{hescape(it.key)}</td><td>{hescape(it.summary)}</td><td>{hescape(it.project)}</td>"
-                f"<td style=\"text-align:right\">{it.hours():.2f}</td><td style=\"text-align:right\">{it.days():.2f}</td></tr>"
-            )
+            ws.append([it.key, it.summary, it.project, float(f"{it.hours():.2f}"), float(f"{it.days():.2f}")])
 
-    friendly_period_escaped = hescape(friendly_period)
-    generated = datetime.now().isoformat()
-    rows_joined = ''.join(rows_html)
-    grand_hours = f"{grand/3600.0:.2f}"
-    grand_days = f"{(grand/3600.0)/8.0:.2f}"
+        # Grand total row
+        ws.append(['GRAND TOTAL', '', '', float(f"{grand/3600.0:.2f}"), float(f"{(grand/3600.0)/8.0:.2f}")])
 
-    html_template = '''<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Jira Worklog Report</title>
-    <style>
-        body { font-family: Arial, Helvetica, sans-serif; margin: 24px; }
-        table { border-collapse: collapse; width: 100%; max-width: 1200px; }
-        th, td { border: 1px solid #ddd; padding: 8px; }
-        th { background: #f4f4f6; text-align: left; cursor: pointer; user-select: none; }
-        th .sort-indicator { margin-left: 6px; color: #666; font-size: 0.9em; }
-        tr:nth-child(even) { background: #fafafa; }
-        tr:hover { background: #f1f7ff; }
-        .right { text-align: right; }
-        .grand { font-weight: 700; background: #eef6ff; }
-    </style>
-</head>
-<body>
-    <h1>Jira Worklog Report</h1>
-        <p>Period: __FRIENDLY_PERIOD__ &nbsp;|&nbsp; Generated: __GENERATED__</p>
-    <table id="report-table">
-        <thead>
-            <tr>
-                <th data-col="0" data-type="string">Issue Key<span class="sort-indicator"></span></th>
-                <th data-col="1" data-type="string">Summary<span class="sort-indicator"></span></th>
-                <th data-col="2" data-type="string">Project<span class="sort-indicator"></span></th>
-                <th data-col="3" data-type="number">Total Hours<span class="sort-indicator"></span></th>
-                <th data-col="4" data-type="number">Total Days (8h)<span class="sort-indicator"></span></th>
-            </tr>
-        </thead>
-        <tbody>
-            __ROWS__
-            <tr class="grand"><td>GRAND TOTAL</td><td></td><td></td><td style="text-align:right">__GRAND_HOURS__</td><td style="text-align:right">__GRAND_DAYS__</td></tr>
-        </tbody>
-    </table>
+        # simple column width adjustments
+        col_widths = {}
+        for row in ws.iter_rows(min_row=4, max_row=ws.max_row):
+            for i, cell in enumerate(row, start=1):
+                val = cell.value
+                if val is None:
+                    length = 0
+                else:
+                    length = len(str(val))
+                col_widths[i] = max(col_widths.get(i, 0), length)
 
-    <script>
-        (function(){
-            const table = document.getElementById('report-table');
-            if (!table) return;
-            const tbody = table.tBodies[0];
-            const headers = table.tHead.rows[0].cells;
+        for i, width in col_widths.items():
+            ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 60)
 
-            function getCellValue(row, idx){
-                const c = row.cells[idx];
-                if (!c) return '';
-                return c.textContent.trim();
-            }
+        # number formatting for hours/days columns
+        for row in ws.iter_rows(min_row=5, min_col=4, max_col=5, max_row=ws.max_row):
+            for cell in row:
+                cell.number_format = '0.00'
 
-            function parseValue(val, type){
-                if (type === 'number'){
-                    const n = parseFloat(val.replace(/,/g,''));
-                    return isNaN(n) ? -Infinity : n;
-                }
-                return val.toLowerCase();
-            }
-
-            function clearIndicators(){
-                Array.from(headers).forEach(h => {
-                    const span = h.querySelector('.sort-indicator');
-                    if (span) span.textContent = '';
-                });
-            }
-
-            Array.from(headers).forEach((th, idx) => {
-                th.style.cursor = 'pointer';
-                th.addEventListener('click', function(){
-                    const type = th.getAttribute('data-type') || 'string';
-                    const current = th.getAttribute('data-order') || 'desc';
-                    const newOrder = current === 'asc' ? 'desc' : 'asc';
-                    th.setAttribute('data-order', newOrder);
-                    Array.from(headers).forEach(h => { if (h !== th) h.removeAttribute('data-order'); });
-
-                    const rows = Array.from(tbody.rows).filter(r => !r.classList.contains('grand'));
-                    rows.sort((a,b) => {
-                        const va = parseValue(getCellValue(a, idx), type);
-                        const vb = parseValue(getCellValue(b, idx), type);
-                        if (va < vb) return newOrder === 'asc' ? -1 : 1;
-                        if (va > vb) return newOrder === 'asc' ? 1 : -1;
-                        return 0;
-                    });
-
-                    rows.forEach(r => tbody.appendChild(r));
-                    const grandRow = tbody.querySelector('tr.grand');
-                    if (grandRow) tbody.appendChild(grandRow);
-
-                    clearIndicators();
-                    const indicator = th.querySelector('.sort-indicator');
-                    if (indicator) indicator.textContent = newOrder === 'asc' ? '▲' : '▼';
-                });
-            });
-        })();
-    </script>
-</body>
-</html>
-'''
-
-    html = (html_template
-        .replace('__FRIENDLY_PERIOD__', friendly_period_escaped)
-        .replace('__GENERATED__', generated)
-        .replace('__ROWS__', rows_joined)
-        .replace('__GRAND_HOURS__', grand_hours)
-        .replace('__GRAND_DAYS__', grand_days))
-
-    with open(out, 'w', encoding='utf-8') as f:
-        f.write(html)
-    print(f"Wrote HTML report to {out}")
+        wb.save(out)
+        print(f"Wrote Excel report to {out}")
 
 
 if __name__ == '__main__':

@@ -4,3 +4,4 @@ pytest
 pytz
 python-dotenv
 pyinstaller
+openpyxl
