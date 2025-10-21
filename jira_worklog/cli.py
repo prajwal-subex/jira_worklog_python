@@ -225,6 +225,8 @@ def main():
     projects: Dict[str, str] = {}
     # collect per-worklog detail rows: tuple(issue_key, summary, project, started_iso, created_iso, seconds, comment)
     details: List[Tuple[str, str, str, str, str, int, str]] = []
+    # collect per-day, per-issue aggregates in IST: key = (date_iso, issue_key) -> seconds
+    day_totals: Dict[Tuple[str, str], int] = {}
     IST = pytz.FixedOffset(330)  # IST is UTC+5:30
 
     for issue in issues:
@@ -277,6 +279,13 @@ def main():
                         created_iso = str(wl.get('created'))
 
                 details.append((key, summary, project, started_iso, created_iso, seconds, comment))
+                # aggregate into day_totals using the IST date
+                try:
+                    date_str = started_ist.date().isoformat()
+                    day_totals[(date_str, key)] = day_totals.get((date_str, key), 0) + seconds
+                except Exception:
+                    # defensive: if date extraction fails, skip day aggregation for that entry
+                    pass
             except Exception:
                 continue
         totals[key] = issue_seconds
@@ -299,8 +308,9 @@ def main():
     else:
         # produce an Excel .xlsx workbook using openpyxl
         try:
-            from openpyxl import Workbook
-            from openpyxl.utils import get_column_letter
+                from openpyxl import Workbook
+                from openpyxl.utils import get_column_letter
+                from openpyxl.styles import Alignment
         except Exception:
             print("openpyxl is required to write Excel files. Install with 'pip install openpyxl'.")
             sys.exit(3)
@@ -365,10 +375,82 @@ def main():
         for i, width in dcol_widths.items():
             details_ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 80)
 
-        # number formatting for hours column in details
-        for row in details_ws.iter_rows(min_row=2, min_col=5, max_col=5, max_row=details_ws.max_row):
+        # number formatting for hours column in details (Hours is column 6)
+        for row in details_ws.iter_rows(min_row=2, min_col=6, max_col=6, max_row=details_ws.max_row):
             for cell in row:
                 cell.number_format = '0.00'
+
+        # add a By Day sheet with date-wise per-ticket hours (IST)
+        byday_ws = wb.create_sheet('By Day')
+        byday_headers = ['Date (IST)', 'Issue Key', 'Project', 'Hours', 'Day Total']
+        byday_ws.append(byday_headers)
+        # sort by date then issue key for stable ordering
+        # prepare a per-date grand total (seconds)
+        per_date_seconds: Dict[str, int] = {}
+        for (date_str, ikey), secs in day_totals.items():
+            per_date_seconds[date_str] = per_date_seconds.get(date_str, 0) + secs
+
+        for (date_str, ikey), secs in sorted(day_totals.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+            proj = projects.get(ikey, '')
+            hours = round(secs / 3600.0, 2)
+            # day_total will be filled into merged cells later; for now put the numeric value on the first row of the date
+            byday_ws.append([date_str, ikey, proj, hours, per_date_seconds.get(date_str, 0) / 3600.0])
+
+        # column width adjustments for By Day sheet
+        bcol_widths = {}
+        for row in byday_ws.iter_rows(min_row=1, max_row=byday_ws.max_row):
+            for i, cell in enumerate(row, start=1):
+                val = cell.value
+                if val is None:
+                    length = 0
+                else:
+                    length = len(str(val))
+                bcol_widths[i] = max(bcol_widths.get(i, 0), length)
+
+        for i, width in bcol_widths.items():
+            byday_ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 40)
+
+        # number formatting for hours column in By Day (column 4) and Day Total (column 5)
+        for row in byday_ws.iter_rows(min_row=2, min_col=4, max_col=5, max_row=byday_ws.max_row):
+            for cell in row:
+                cell.number_format = '0.00'
+
+        # merge Date (IST) cells so each date appears only once (merge consecutive identical dates)
+        # and merge Day Total cells (column 5) across the same spans
+        if byday_ws.max_row >= 2:
+            merge_start = 2
+            prev_date = byday_ws.cell(row=2, column=1).value
+            for r in range(3, byday_ws.max_row + 1):
+                cur_date = byday_ws.cell(row=r, column=1).value
+                if cur_date == prev_date:
+                    # continue the current span
+                    continue
+                # date changed: if span length > 1, merge
+                span_end = r - 1
+                if merge_start < span_end:
+                    # merge Date column
+                    byday_ws.merge_cells(start_row=merge_start, start_column=1, end_row=span_end, end_column=1)
+                    # merge Day Total column
+                    byday_ws.merge_cells(start_row=merge_start, start_column=5, end_row=span_end, end_column=5)
+                    # center vertically the merged cells for nicer layout
+                    byday_ws.cell(row=merge_start, column=1).alignment = Alignment(vertical='center')
+                    byday_ws.cell(row=merge_start, column=5).alignment = Alignment(vertical='center')
+                else:
+                    # single cell - set vertical center alignment as well
+                    byday_ws.cell(row=merge_start, column=1).alignment = Alignment(vertical='center')
+                    byday_ws.cell(row=merge_start, column=5).alignment = Alignment(vertical='center')
+                # start new span
+                merge_start = r
+                prev_date = cur_date
+            # finalize last span
+            if merge_start < byday_ws.max_row:
+                byday_ws.merge_cells(start_row=merge_start, start_column=1, end_row=byday_ws.max_row, end_column=1)
+                byday_ws.merge_cells(start_row=merge_start, start_column=5, end_row=byday_ws.max_row, end_column=5)
+                byday_ws.cell(row=merge_start, column=1).alignment = Alignment(vertical='center')
+                byday_ws.cell(row=merge_start, column=5).alignment = Alignment(vertical='center')
+            else:
+                byday_ws.cell(row=merge_start, column=1).alignment = Alignment(vertical='center')
+                byday_ws.cell(row=merge_start, column=5).alignment = Alignment(vertical='center')
 
         wb.save(out)
         print(f"Wrote Excel report to {out} (sheets: {', '.join(wb.sheetnames)})")
