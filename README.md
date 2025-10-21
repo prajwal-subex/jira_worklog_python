@@ -34,3 +34,23 @@ Files
 
 Notes
 - The script uses the Jira Cloud REST API v3 and performs client-side filtering by parsing worklog timestamps. All timestamps in Excel are converted/shown in IST (UTC+5:30).
+
+Setup (recommended)
+- On Windows PowerShell create and use a local virtual environment named `.venv` (the included `run_report.bat` expects this location and will prefer the venv's Python if present):
+
+	```powershell
+	# create a venv in the project root
+	python -m venv .venv
+
+	# activate it for this session
+	& .\.venv\Scripts\Activate.ps1
+
+	# upgrade pip and install project dependencies
+	python -m pip install --upgrade pip
+	pip install -r .\requirements.txt
+
+	# run the CLI (or double-click run_report.bat)
+	python -m jira_worklog.cli
+	```
+
+If you do not create `.venv`, `run_report.bat` will run the `python` available on your PATH as a fallback — make sure that Python has the required dependencies installed.
