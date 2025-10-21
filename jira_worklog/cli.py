@@ -130,13 +130,11 @@ def search_issues(base: str, email: str, api_token: str, jql: str) -> List[dict]
         'Accept': 'application/json',
         'Authorization': 'Basic ' + base64.b64encode(f"{email}:{api_token}".encode('utf-8')).decode('utf-8')
     }
-    print("Headers: ", headers)
     all_issues = []
     start_at = 0
     max_results = 50
     while True:
         url = f"{base}/rest/api/3/search/jql?jql={quote_plus(jql)}&fields=project,worklog,summary&startAt={start_at}&maxResults={max_results}"
-        print("GET", url)
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code // 100 != 2:
             raise RuntimeError(f"Jira API error: {resp.status_code} - {resp.text}")
