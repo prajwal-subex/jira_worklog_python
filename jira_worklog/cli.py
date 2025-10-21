@@ -320,6 +320,7 @@ def main():
             ws.append([it.key, it.summary, it.project, float(f"{it.hours():.2f}"), float(f"{it.days():.2f}")])
 
         # Grand total row
+        ws.append(['', '', '', '', ''])
         ws.append(['GRAND TOTAL', '', '', float(f"{grand/3600.0:.2f}"), float(f"{(grand/3600.0)/8.0:.2f}")])
 
         # simple column width adjustments for summary sheet
