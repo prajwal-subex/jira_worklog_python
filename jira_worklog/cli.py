@@ -12,6 +12,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, date, time, timedelta
 from dateutil import parser
 import pytz
+import json
 from typing import Optional, Tuple, List, Dict
 
 # load .env if present
@@ -125,16 +126,19 @@ def get_env_or_prompt(name: str, prompt_text: str, hide: bool = False) -> str:
         sys.exit(1)
 
 
-def search_issues(base: str, email: str, api_token: str, jql: str) -> List[dict]:
+def search_issues(base: str, email: str, api_token: str, jql: str, period: str) -> List[dict]:
     headers = {
         'Accept': 'application/json',
         'Authorization': 'Basic ' + base64.b64encode(f"{email}:{api_token}".encode('utf-8')).decode('utf-8')
     }
     all_issues = []
     start_at = 0
-    max_results = 50
+    max_results = 1000
+    # Calculate date range once for all issues
+    date_range = compute_range(period, pytz.timezone(os.environ.get('TZ', 'UTC')))
+    
     while True:
-        url = f"{base}/rest/api/3/search/jql?jql={quote_plus(jql)}&fields=project,worklog,summary&startAt={start_at}&maxResults={max_results}"
+        url = f"{base}/rest/api/3/search/jql?jql={quote_plus(jql)}&fields=project,summary&startAt={start_at}&maxResults={max_results}"
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code // 100 != 2:
             raise RuntimeError(f"Jira API error: {resp.status_code} - {resp.text}")
@@ -142,6 +146,15 @@ def search_issues(base: str, email: str, api_token: str, jql: str) -> List[dict]
         issues = root.get('issues', [])
         if not issues:
             break
+            
+        # Fetch complete worklog for each issue
+        for issue in issues:
+            issue_key = issue.get('key')
+            if issue_key:
+                worklogs = fetch_all_worklogs(base, headers, issue_key, date_range)
+                if worklogs:  # Only set if we got worklogs
+                    issue['fields']['worklog'] = {'worklogs': worklogs}
+                    
         all_issues.extend(issues)
         total = int(root.get('total', len(all_issues)))
         returned = int(root.get('maxResults', max_results))
@@ -149,6 +162,78 @@ def search_issues(base: str, email: str, api_token: str, jql: str) -> List[dict]
         if start_at >= total:
             break
     return all_issues
+
+
+def fetch_all_worklogs(base: str, headers: dict, issue_key: str, period_range: Optional[Tuple[datetime, datetime]] = None) -> List[dict]:
+    """Fetch all worklogs for an issue, handling pagination and sorting by started date."""
+    worklogs = []
+    start_at = 0
+    max_results = 1000  # Maximum allowed by Jira API
+    
+    while True:
+        url = f"{base}/rest/api/3/issue/{issue_key}/worklog?startAt={start_at}&maxResults={max_results}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code // 100 != 2:
+                print(f"Warning: failed to fetch worklogs for {issue_key}: {resp.status_code}")
+                break
+            data = resp.json()
+            current_batch = data.get('worklogs', [])
+            
+            # Sort current batch by started date in descending order (newest first)
+            try:
+                current_batch.sort(key=lambda w: w.get('started', ''), reverse=True)
+            except Exception as ex:
+                print(f"Warning: failed to sort worklogs for {issue_key}: {ex}")
+            
+            # If we have a date range, check if we can stop early
+            if period_range and current_batch:
+                try:
+                    # Check the last (oldest) worklog in current batch
+                    oldest_started = current_batch[-1].get('started')
+                    if oldest_started:
+                        oldest_dt = parser.isoparse(oldest_started)
+                        if oldest_dt.tzinfo is None:
+                            oldest_dt = oldest_dt.replace(tzinfo=pytz.UTC)
+                        # If oldest worklog is before our period start, we can stop
+                        if oldest_dt < period_range[0]:
+                            # Add only worklogs that fall within our period
+                            worklogs.extend([
+                                w for w in current_batch 
+                                if period_range[0] <= parser.isoparse(w['started']).replace(tzinfo=pytz.UTC) <= period_range[1]
+                            ])
+                            break
+                except Exception:
+                    # If any parsing fails, continue with normal processing
+                    pass
+            
+            worklogs.extend(current_batch)
+            total = int(data.get('total', len(worklogs)))
+            if start_at + max_results >= total:
+                break
+            start_at += max_results
+        except Exception as ex:
+            print(f"Warning: exception while fetching worklogs for {issue_key}: {ex}")
+            break
+            
+    return worklogs
+
+def fetch_issue_by_key(base: str, email: str, api_token: str, issue_key: str) -> Optional[dict]:
+    """Fetch a single issue from Jira by key using REST API v3 and return the issue dict or None on error."""
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': 'Basic ' + base64.b64encode(f"{email}:{api_token}".encode('utf-8')).decode('utf-8')
+    }
+    url = f"{base}/rest/api/3/issue/{issue_key}?fields=project,summary"
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code // 100 != 2:
+            print(f"Warning: failed to fetch issue {issue_key}: {resp.status_code}")
+            return None
+        return resp.json()
+    except Exception as ex:
+        print(f"Warning: exception while fetching issue {issue_key}: {ex}")
+        return None
 
 
 def main():
@@ -199,10 +284,32 @@ def main():
         ]
     else:
         try:
-            issues = search_issues(base, email, api_token, jql)
+            issues = search_issues(base, email, api_token, jql, period)
         except Exception as ex:
             print("Failed to call Jira:", ex)
             sys.exit(2)
+
+    # Fetch additional explicit issue keys and append their data (useful for including service-desk issues)
+    extra_issue_keys = ['DPLT-5631', 'DPLT-5632', 'DPLT-5633', 'DPLT-5634', 'DPLT-5635']
+    if os.environ.get('MOCK_JIRA') == '1':
+        # allow using a local JSON dump for DPLT-5631 if available in Downloads
+        local = os.path.join(os.path.expanduser('~'), 'Downloads', 'DPLT-5631.json')
+        if os.path.exists(local):
+            try:
+                with open(local, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                    if isinstance(data, dict) and data.get('key'):
+                        issues.append(data)
+                        print('Loaded local DPLT-5631.json into issues list')
+            except Exception as ex:
+                print('Warning: failed to load local DPLT-5631.json:', ex)
+    else:
+        for k in extra_issue_keys:
+            issue_obj = fetch_issue_by_key(base, email, api_token, k)
+            if issue_obj:
+                # avoid duplicates by key
+                if not any(i.get('key') == issue_obj.get('key') for i in issues):
+                    issues.append(issue_obj)
 
     rng = compute_range(period, pytz.timezone(os.environ.get('TZ', 'UTC')))
 
