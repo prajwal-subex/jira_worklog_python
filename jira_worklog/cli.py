@@ -238,7 +238,7 @@ def fetch_issue_by_key(base: str, email: str, api_token: str, issue_key: str) ->
 
 def main():
     print("Jira Worklog CLI - generates issue-wise worklog CSV")
-    base = input(f"Jira base URL [{DEFAULT_BASE}]: ").strip() or DEFAULT_BASE
+    base = DEFAULT_BASE
     email = get_env_or_prompt('EMAIL', 'Email: ')
     api_token = get_env_or_prompt('API_KEY', 'API token: ', hide=True)
     period = input("Period (this, last, all) [this]: ").strip() or 'this'
