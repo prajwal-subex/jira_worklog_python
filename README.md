@@ -14,12 +14,22 @@ Output
 - CSV fallback: if you pass a filename ending with .csv the CLI writes a simple CSV with Issue Key, Summary, Project, Total Hours, Total Days.
 
 Usage
-- Ensure `EMAIL` and `API_KEY` are set as environment variables or enter them when prompted.
-- Run the CLI:
+1. Create a `.env` file in the project root with your Jira credentials:
+   ```
+   EMAIL=your.email@subex.com
+   API_KEY=your_jira_api_token_here
+   ```
+   Note: You can generate an API token from your Atlassian account settings (https://id.atlassian.com/manage-profile/security/api-tokens)
 
-	python -m jira_worklog.cli
-
-	When prompted accept defaults or provide your Jira base URL and desired output filename (default: `worklog-report.xlsx`).
+2. Run the CLI:
+   ```
+   python -m jira_worklog.cli
+   ```
+   The script will:
+   - Read credentials from `.env` file (or prompt if not found)
+   - Use default Jira URL (https://subex.atlassian.net)
+   - Default to current month's worklogs
+   - Generate report as `worklog-report.xlsx` (or specify another filename when prompted)
 
 Local testing helper
 - To run the CLI without calling Jira, set environment variable `MOCK_JIRA=1` before running; this generates sample data and writes the report locally.
