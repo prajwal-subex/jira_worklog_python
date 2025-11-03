@@ -218,26 +218,9 @@ def fetch_all_worklogs(base: str, headers: dict, issue_key: str, period_range: O
             
     return worklogs
 
-def fetch_issue_by_key(base: str, email: str, api_token: str, issue_key: str) -> Optional[dict]:
-    """Fetch a single issue from Jira by key using REST API v3 and return the issue dict or None on error."""
-    headers = {
-        'Accept': 'application/json',
-        'Authorization': 'Basic ' + base64.b64encode(f"{email}:{api_token}".encode('utf-8')).decode('utf-8')
-    }
-    url = f"{base}/rest/api/3/issue/{issue_key}?fields=project,summary"
-    try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code // 100 != 2:
-            print(f"Warning: failed to fetch issue {issue_key}: {resp.status_code}")
-            return None
-        return resp.json()
-    except Exception as ex:
-        print(f"Warning: exception while fetching issue {issue_key}: {ex}")
-        return None
-
 
 def main():
-    print("Jira Worklog CLI - generates issue-wise worklog CSV")
+    print("Jira Worklog CLI - generates issue-wise worklog report")
     base = DEFAULT_BASE
     email = get_env_or_prompt('EMAIL', 'Email: ')
     api_token = get_env_or_prompt('API_KEY', 'API token: ', hide=True)
@@ -289,27 +272,7 @@ def main():
             print("Failed to call Jira:", ex)
             sys.exit(2)
 
-    # Fetch additional explicit issue keys and append their data (useful for including service-desk issues)
-    extra_issue_keys = ['DPLT-5631', 'DPLT-5632', 'DPLT-5633', 'DPLT-5634', 'DPLT-5635']
-    if os.environ.get('MOCK_JIRA') == '1':
-        # allow using a local JSON dump for DPLT-5631 if available in Downloads
-        local = os.path.join(os.path.expanduser('~'), 'Downloads', 'DPLT-5631.json')
-        if os.path.exists(local):
-            try:
-                with open(local, 'r', encoding='utf-8') as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict) and data.get('key'):
-                        issues.append(data)
-                        print('Loaded local DPLT-5631.json into issues list')
-            except Exception as ex:
-                print('Warning: failed to load local DPLT-5631.json:', ex)
-    else:
-        for k in extra_issue_keys:
-            issue_obj = fetch_issue_by_key(base, email, api_token, k)
-            if issue_obj:
-                # avoid duplicates by key
-                if not any(i.get('key') == issue_obj.get('key') for i in issues):
-                    issues.append(issue_obj)
+    # All issues with worklogs will be found through the JQL search
 
     rng = compute_range(period, pytz.timezone(os.environ.get('TZ', 'UTC')))
 
